@@ -27,8 +27,12 @@ jobs:
           tar -xzf /tmp/repo.tar.gz -C /tmp/repo-source
           SOURCE=/tmp/repo-source/wp-oidc-keycloak-integration-0.6.31
           test -d "$SOURCE/mu-plugins"
+          cp .github/workflows/bootstrap-publish.yml /tmp/bootstrap-publish.yml
           find . -mindepth 1 -maxdepth 1 ! -name .git ! -name LICENSE -exec rm -rf {} +
           cp -a "$SOURCE"/. .
+          mkdir -p .github/workflows
+          rm -f .github/workflows/release.yml
+          cp /tmp/bootstrap-publish.yml .github/workflows/bootstrap-publish.yml
           test -f LICENSE
           bash scripts/validate.sh v0.6.31
 
