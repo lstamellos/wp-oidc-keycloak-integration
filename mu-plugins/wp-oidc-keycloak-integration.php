@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP OIDC Keycloak Integration
  * Description: Keycloak/OIDC account-authority integration for WordPress and WooCommerce.
- * Version: 0.6.31
+ * Version: 0.6.32
  * Requires at least: 6.5
  * Requires PHP: 8.0
  * Requires Plugins: daggerhart-openid-connect-generic
@@ -58,6 +58,108 @@ final class WP_OIDC_Keycloak_Integration
         'daggerhart-openid-connect-generic';
     private const OIDC_PLUGIN_MIN_VERSION = '3.11.3';
 
+    /**
+     * Pre-generic runtime identifiers retained strictly as transition
+     * aliases. Generic identifiers always take precedence when both are
+     * configured. These aliases prevent a namespace-only migration from
+     * silently changing authentication or persisted account state.
+     */
+    private const LEGACY_FEATURE_FLAGS = [
+        'WP_OIDC_KEYCLOAK_FILTER_LOGIN_URLS' =>
+            'OMNIATV_KEYCLOAK_FILTER_LOGIN_URLS',
+        'WP_OIDC_KEYCLOAK_REDIRECT_DIRECT_LOGIN' =>
+            'OMNIATV_KEYCLOAK_REDIRECT_DIRECT_LOGIN',
+        'WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION' =>
+            'OMNIATV_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION',
+        'WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES' =>
+            'OMNIATV_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES',
+        'WP_OIDC_KEYCLOAK_LOGIN_AUDIT' =>
+            'OMNIATV_KEYCLOAK_LOGIN_AUDIT',
+    ];
+
+    private const META_PREFIX = '_wp_oidc_keycloak_';
+    private const LEGACY_META_PREFIX = '_omniatv_keycloak_';
+
+    private const META_PROVISIONING_STATUS =
+        '_wp_oidc_keycloak_provisioning_status';
+    private const META_PROVISIONING_SOURCE =
+        '_wp_oidc_keycloak_provisioning_source';
+    private const META_PROVISIONING_DECISION =
+        '_wp_oidc_keycloak_provisioning_decision';
+    private const META_GUEST_AUTO_LINK_USER_ID =
+        '_wp_oidc_keycloak_guest_auto_link_user_id';
+    private const META_GUEST_AUTO_LINK_METHOD =
+        '_wp_oidc_keycloak_guest_auto_link_method';
+    private const META_GUEST_AUTO_LINK_EMAIL_SHA256 =
+        '_wp_oidc_keycloak_guest_auto_link_email_sha256';
+    private const META_GUEST_AUTO_LINKED_AT_UTC =
+        '_wp_oidc_keycloak_guest_auto_linked_at_utc';
+    private const META_GUEST_CLAIM_USER_ID =
+        '_wp_oidc_keycloak_guest_claim_user_id';
+    private const META_GUEST_CLAIM_SUBJECT =
+        '_wp_oidc_keycloak_guest_claim_subject';
+    private const META_GUEST_CLAIMED_AT_UTC =
+        '_wp_oidc_keycloak_guest_claimed_at_utc';
+    private const META_ACTIVATION_EMAIL_STATUS =
+        '_wp_oidc_keycloak_activation_email_status';
+    private const META_ACTIVATION_EMAIL_ACTIONS =
+        '_wp_oidc_keycloak_activation_email_actions';
+    private const META_ACTIVATION_EMAIL_ERROR =
+        '_wp_oidc_keycloak_activation_email_error';
+    private const META_ACTIVATION_EMAIL_ERROR_CODE =
+        '_wp_oidc_keycloak_activation_email_error_code';
+    private const META_ACTIVATION_EMAIL_ERROR_DETAIL =
+        '_wp_oidc_keycloak_activation_email_error_detail';
+    private const META_ACTIVATION_EMAIL_ERROR_SHA256 =
+        '_wp_oidc_keycloak_activation_email_error_sha256';
+    private const META_ACTIVATION_EMAIL_FAILED_AT_UTC =
+        '_wp_oidc_keycloak_activation_email_failed_at_utc';
+    private const META_ACTIVATION_EMAIL_LAST_ATTEMPT_AT_UTC =
+        '_wp_oidc_keycloak_activation_email_last_attempt_at_utc';
+    private const META_ACTIVATION_EMAIL_SENT_AT_UTC =
+        '_wp_oidc_keycloak_activation_email_sent_at_utc';
+
+    private const ACTION_UPDATE_EMAIL =
+        'wp_oidc_keycloak_update_email';
+    private const ACTION_UPDATE_PASSWORD =
+        'wp_oidc_keycloak_update_password';
+    private const LEGACY_ACTION_UPDATE_EMAIL =
+        'omniatv_update_email';
+    private const LEGACY_ACTION_UPDATE_PASSWORD =
+        'omniatv_update_password';
+
+    private const QUERY_ACCOUNT_LINK =
+        'wp_oidc_keycloak_account_link';
+    private const LEGACY_QUERY_ACCOUNT_LINK =
+        'omniatv_account_link';
+    private const QUERY_CLAIM_CONTRIBUTION =
+        'wp_oidc_keycloak_claim_contribution';
+    private const LEGACY_QUERY_CLAIM_CONTRIBUTION =
+        'omniatv_claim_contribution';
+    private const QUERY_CLAIM_SIGNATURE =
+        'wp_oidc_keycloak_claim_sig';
+    private const LEGACY_QUERY_CLAIM_SIGNATURE =
+        'omniatv_claim_sig';
+
+    private const FILTER_CHECKOUT_REGISTRATION_REQUEST =
+        'wp_oidc_keycloak_checkout_registration_request';
+    private const LEGACY_FILTER_CHECKOUT_REGISTRATION_REQUEST =
+        'omniatv_keycloak_checkout_registration_request';
+
+    /*
+     * WP_Error codes are machine-readable extension contracts. Keep the
+     * pre-generic values during the migration window; changing the human
+     * message/text domain does not require changing the error identifier.
+     */
+    private const ERROR_NATIVE_LOGIN_DISABLED =
+        'omniatv_keycloak_native_login_disabled';
+    private const ERROR_ACCOUNT_IDENTITY_UNAVAILABLE =
+        'omniatv_keycloak_account_identity_unavailable';
+    private const ERROR_EMAIL_CHANGE_DISABLED =
+        'omniatv_keycloak_email_change_disabled';
+    private const ERROR_PASSWORD_CHANGE_DISABLED =
+        'omniatv_keycloak_password_change_disabled';
+
     private static string $dependencyError = '';
 
     /**
@@ -79,6 +181,37 @@ final class WP_OIDC_Keycloak_Integration
      */
     public static function bootstrap_with_dependency_check(): void
     {
+        /*
+         * Fail closed if the complete pre-generic integration is still
+         * loaded. The compatibility class alias is registered only below,
+         * so a pre-existing non-alias class means an unsafe dual-load state.
+         */
+        if (
+            class_exists('OmniaTV_Keycloak_Integration', false) &&
+            !is_a(
+                'OmniaTV_Keycloak_Integration',
+                self::class,
+                true
+            )
+        ) {
+            self::$dependencyError =
+                'The pre-generic OmniaTV Keycloak integration is still loaded. ' .
+                'Remove the legacy MU-plugin before enabling the generic integration.';
+            add_action(
+                'admin_notices',
+                [self::class, 'render_dependency_notice']
+            );
+            add_action(
+                'network_admin_notices',
+                [self::class, 'render_dependency_notice']
+            );
+            error_log(
+                'WP OIDC Keycloak migration error: ' .
+                self::$dependencyError
+            );
+            return;
+        }
+
         $error = self::oidc_dependency_error();
 
         if ($error !== '') {
@@ -97,6 +230,7 @@ final class WP_OIDC_Keycloak_Integration
             return;
         }
 
+        self::register_legacy_class_alias();
         self::bootstrap();
     }
 
@@ -182,6 +316,166 @@ final class WP_OIDC_Keycloak_Integration
             esc_html__('WP OIDC Keycloak Integration:', 'wp-oidc-keycloak-integration'),
             esc_html(self::$dependencyError)
         );
+    }
+
+    /**
+     * Resolve a boolean feature flag with generic-first legacy fallback.
+     * An explicitly defined generic false value overrides legacy true.
+     */
+    private static function feature_flag_enabled(
+        string $genericName
+    ): bool {
+        if (defined($genericName)) {
+            return constant($genericName) === true;
+        }
+
+        $legacyName = self::LEGACY_FEATURE_FLAGS[$genericName] ?? '';
+
+        return
+            $legacyName !== '' &&
+            defined($legacyName) &&
+            constant($legacyName) === true;
+    }
+
+    /**
+     * Register the pre-generic class name only after all MU plugins have
+     * already loaded. This preserves external callers without creating a
+     * class-definition collision during a legacy-file migration.
+     */
+    private static function register_legacy_class_alias(): void
+    {
+        if (!class_exists('OmniaTV_Keycloak_Integration', false)) {
+            class_alias(
+                self::class,
+                'OmniaTV_Keycloak_Integration'
+            );
+        }
+    }
+
+    private static function legacy_meta_key(string $genericKey): string
+    {
+        if (!str_starts_with($genericKey, self::META_PREFIX)) {
+            return '';
+        }
+
+        return self::LEGACY_META_PREFIX . substr(
+            $genericKey,
+            strlen(self::META_PREFIX)
+        );
+    }
+
+    private static function get_compatible_user_meta(
+        int $userId,
+        string $genericKey
+    ): mixed {
+        if (metadata_exists('user', $userId, $genericKey)) {
+            return get_user_meta($userId, $genericKey, true);
+        }
+
+        $legacyKey = self::legacy_meta_key($genericKey);
+
+        if (
+            $legacyKey !== '' &&
+            metadata_exists('user', $userId, $legacyKey)
+        ) {
+            return get_user_meta($userId, $legacyKey, true);
+        }
+
+        return get_user_meta($userId, $genericKey, true);
+    }
+
+    private static function update_compatible_user_meta(
+        int $userId,
+        string $genericKey,
+        mixed $value
+    ): mixed {
+        $result = update_user_meta($userId, $genericKey, $value);
+        $legacyKey = self::legacy_meta_key($genericKey);
+
+        /*
+         * Keep an already-existing legacy key synchronized so rollback
+         * during the migration window does not expose stale state. New
+         * generic installations do not create legacy metadata.
+         */
+        if (
+            $legacyKey !== '' &&
+            metadata_exists('user', $userId, $legacyKey)
+        ) {
+            update_user_meta($userId, $legacyKey, $value);
+        }
+
+        return $result;
+    }
+
+    private static function delete_compatible_user_meta(
+        int $userId,
+        string $genericKey
+    ): void {
+        delete_user_meta($userId, $genericKey);
+
+        $legacyKey = self::legacy_meta_key($genericKey);
+
+        if ($legacyKey !== '') {
+            delete_user_meta($userId, $legacyKey);
+        }
+    }
+
+    private static function order_meta_exists(
+        WC_Order $order,
+        string $key
+    ): bool {
+        if (method_exists($order, 'meta_exists')) {
+            return (bool) $order->meta_exists($key);
+        }
+
+        return $order->get_meta($key, true) !== '';
+    }
+
+    private static function get_compatible_order_meta(
+        WC_Order $order,
+        string $genericKey
+    ): mixed {
+        if (self::order_meta_exists($order, $genericKey)) {
+            return $order->get_meta($genericKey, true);
+        }
+
+        $legacyKey = self::legacy_meta_key($genericKey);
+
+        if (
+            $legacyKey !== '' &&
+            self::order_meta_exists($order, $legacyKey)
+        ) {
+            return $order->get_meta($legacyKey, true);
+        }
+
+        return $order->get_meta($genericKey, true);
+    }
+
+    private static function update_compatible_order_meta(
+        WC_Order $order,
+        string $genericKey,
+        mixed $value
+    ): void {
+        $order->update_meta_data($genericKey, $value);
+        $legacyKey = self::legacy_meta_key($genericKey);
+
+        if (
+            $legacyKey !== '' &&
+            self::order_meta_exists($order, $legacyKey)
+        ) {
+            $order->update_meta_data($legacyKey, $value);
+        }
+    }
+
+    private static function query_parameter(
+        string $genericKey,
+        string $legacyKey
+    ): mixed {
+        if (isset($_GET[$genericKey])) {
+            return $_GET[$genericKey];
+        }
+
+        return $_GET[$legacyKey] ?? null;
     }
 
     public static function bootstrap(): void
@@ -653,10 +947,9 @@ final class WP_OIDC_Keycloak_Integration
      */
     public static function login_url_filtering_enabled(): bool
     {
-        return defined(
+        return self::feature_flag_enabled(
             'WP_OIDC_KEYCLOAK_FILTER_LOGIN_URLS'
-        ) &&
-            WP_OIDC_KEYCLOAK_FILTER_LOGIN_URLS === true;
+        );
     }
 
     /**
@@ -875,7 +1168,16 @@ final class WP_OIDC_Keycloak_Integration
             $url = self::get_password_recovery_url(
                 $redirectTo
             );
-        } elseif ($action === 'wp_oidc_keycloak_update_email') {
+        } elseif (
+            in_array(
+                $action,
+                [
+                    self::ACTION_UPDATE_EMAIL,
+                    self::LEGACY_ACTION_UPDATE_EMAIL,
+                ],
+                true
+            )
+        ) {
             wp_die(
                 esc_html__(
                     'Login email changes are not available for central accounts.',
@@ -887,7 +1189,16 @@ final class WP_OIDC_Keycloak_Integration
                 ),
                 ['response' => 403]
             );
-        } elseif ($action === 'wp_oidc_keycloak_update_password') {
+        } elseif (
+            in_array(
+                $action,
+                [
+                    self::ACTION_UPDATE_PASSWORD,
+                    self::LEGACY_ACTION_UPDATE_PASSWORD,
+                ],
+                true
+            )
+        ) {
             $redirectTo = self::current_edit_account_url();
             $rawRedirect = $_REQUEST['redirect_to'] ?? '';
 
@@ -1451,10 +1762,9 @@ final class WP_OIDC_Keycloak_Integration
      */
     public static function direct_login_redirect_enabled(): bool
     {
-        return defined(
+        return self::feature_flag_enabled(
             'WP_OIDC_KEYCLOAK_REDIRECT_DIRECT_LOGIN'
-        ) &&
-            WP_OIDC_KEYCLOAK_REDIRECT_DIRECT_LOGIN === true;
+        );
     }
 
     /**
@@ -1562,10 +1872,9 @@ final class WP_OIDC_Keycloak_Integration
      */
     public static function native_authentication_blocking_enabled(): bool
     {
-        return defined(
+        return self::feature_flag_enabled(
             'WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION'
-        ) &&
-            WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION === true;
+        );
     }
 
     /**
@@ -1626,7 +1935,7 @@ final class WP_OIDC_Keycloak_Integration
         }
 
         return new WP_Error(
-            'wp_oidc_keycloak_native_login_disabled',
+            self::ERROR_NATIVE_LOGIN_DISABLED,
             __(
                 'Password login is disabled. Please sign in with OpenID Connect.',
                 'wp-oidc-keycloak-integration'
@@ -1722,7 +2031,7 @@ final class WP_OIDC_Keycloak_Integration
         string $redirectTo = ''
     ): string {
         $dispatchActions = [
-            'UPDATE_PASSWORD' => 'wp_oidc_keycloak_update_password',
+            'UPDATE_PASSWORD' => self::ACTION_UPDATE_PASSWORD,
         ];
 
         if (!isset($dispatchActions[$action])) {
@@ -1950,17 +2259,17 @@ final class WP_OIDC_Keycloak_Integration
             : 'Σύνδεση με OpenID Connect';
 
         printf(
-            '<div class="td-woo-coupon-wrap wp-oidc-keycloak-checkout-login">
+            '<div class="td-woo-coupon-wrap wp-oidc-keycloak-checkout-login omniatv-keycloak-checkout-login">
                 <svg width="24" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
                     <path d="M16 15.65c3.472 0 6.286-2.814 6.287-6.287-0.001-3.473-2.815-6.287-6.287-6.288-3.474 0.001-6.287 2.815-6.288 6.289 0.001 3.473 2.815 6.287 6.288 6.287zM16 5.574c2.091 0.004 3.784 1.695 3.786 3.788-0.003 2.091-1.695 3.783-3.786 3.787-2.092-0.004-3.784-1.696-3.788-3.787 0.004-2.093 1.697-3.784 3.788-3.788zM16 18.182c-6.536 0.003-11.991 4.6-13.318 10.743h2.575c1.273-4.742 5.597-8.244 10.744-8.243 5.146-0.002 9.469 3.5 10.742 8.243h2.576c-1.329-6.143-6.782-10.74-13.318-10.743z"></path>
                 </svg>
-                <div class="wp-oidc-keycloak-checkout-login__content">
+                <div class="wp-oidc-keycloak-checkout-login__content omniatv-keycloak-checkout-login__content">
                     <p>
                         <strong>%1$s</strong>
                     </p>
                     <p>%2$s</p>
-                    <p class="wp-oidc-keycloak-checkout-login__actions">
-                        <a class="button alt wp-oidc-keycloak-checkout-login__button" href="%3$s">%4$s</a>
+                    <p class="wp-oidc-keycloak-checkout-login__actions omniatv-keycloak-checkout-login__actions">
+                        <a class="button alt wp-oidc-keycloak-checkout-login__button omniatv-keycloak-checkout-login__button" href="%3$s">%4$s</a>
                     </p>
                 </div>
             </div>',
@@ -2005,11 +2314,11 @@ final class WP_OIDC_Keycloak_Integration
             : 'Σύνδεση με OpenID Connect';
 
         printf(
-            '<section class="wp-oidc-keycloak-login" aria-labelledby="wp-oidc-keycloak-login-title">
-                <h2 id="wp-oidc-keycloak-login-title">%1$s</h2>
+            '<section class="wp-oidc-keycloak-login omniatv-keycloak-login" aria-labelledby="omniatv-keycloak-login-title">
+                <h2 id="omniatv-keycloak-login-title">%1$s</h2>
                 <p>%2$s</p>
                 <p>
-                    <a class="button alt wp-oidc-keycloak-login__button" href="%3$s">%4$s</a>
+                    <a class="button alt wp-oidc-keycloak-login__button omniatv-keycloak-login__button" href="%3$s">%4$s</a>
                 </p>
             </section>',
             esc_html($heading),
@@ -2818,13 +3127,9 @@ final class WP_OIDC_Keycloak_Integration
 
     private static function keycloak_wordpress_attribute_sync_enabled(
     ): bool {
-        return
-            defined(
-                'WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES'
-            ) &&
-            constant(
-                'WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES'
-            ) === true;
+        return self::feature_flag_enabled(
+            'WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES'
+        );
     }
 
     /**
@@ -3472,7 +3777,7 @@ final class WP_OIDC_Keycloak_Integration
 
         if (!$currentUser instanceof WP_User) {
             $errors->add(
-                'wp_oidc_keycloak_account_identity_unavailable',
+                self::ERROR_ACCOUNT_IDENTITY_UNAVAILABLE,
                 __('The central account could not be verified.', 'wp-oidc-keycloak-integration')
             );
 
@@ -3495,7 +3800,7 @@ final class WP_OIDC_Keycloak_Integration
                 !hash_equals($currentEmail, $postedEmail)
             ) {
                 $errors->add(
-                    'wp_oidc_keycloak_email_change_disabled',
+                    self::ERROR_EMAIL_CHANGE_DISABLED,
                     __('The login email cannot be changed from the account interface.', 'wp-oidc-keycloak-integration')
                 );
             }
@@ -3513,7 +3818,7 @@ final class WP_OIDC_Keycloak_Integration
 
             if (is_string($value) && $value !== '') {
                 $errors->add(
-                    'wp_oidc_keycloak_password_change_disabled',
+                    self::ERROR_PASSWORD_CHANGE_DISABLED,
                     __('Password changes are managed through your central account.', 'wp-oidc-keycloak-integration')
                 );
 
@@ -3600,7 +3905,7 @@ final class WP_OIDC_Keycloak_Integration
             ? 'Register with OpenID Connect'
             : 'Εγγραφή με OpenID Connect';
 
-        echo '<section class="wp-oidc-keycloak-panel wp-oidc-keycloak-registration-panel">';
+        echo '<section class="wp-oidc-keycloak-panel wp-oidc-keycloak-registration-panel omniatv-keycloak-panel omniatv-keycloak-registration-panel">';
 
         echo '<h2>' .
             esc_html($heading) .
@@ -3612,7 +3917,7 @@ final class WP_OIDC_Keycloak_Integration
 
         echo '<p>';
 
-        echo '<a class="button alt wp-oidc-keycloak-register-button" href="' .
+        echo '<a class="button alt wp-oidc-keycloak-register-button omniatv-keycloak-register-button" href="' .
             esc_url($registration_url) .
             '">';
 
@@ -3641,8 +3946,21 @@ final class WP_OIDC_Keycloak_Integration
             '0.1.0'
         );
 
+        /*
+         * Keep the pre-generic style handle registered and enqueued as an
+         * alias during migration. Existing theme/plugin code that attaches
+         * inline CSS to the legacy handle continues to run, while the generic
+         * handle remains the canonical dependency.
+         */
+        wp_register_style(
+            'omniatv-keycloak-integration',
+            false,
+            ['wp-oidc-keycloak-integration'],
+            '0.1.0'
+        );
+
         wp_enqueue_style(
-            'wp-oidc-keycloak-integration'
+            'omniatv-keycloak-integration'
         );
 
         wp_add_inline_style(
@@ -3994,10 +4312,9 @@ final class WP_OIDC_Keycloak_Integration
     public static function audit_current_login_surface(): void
     {
         if (
-            !defined(
+            !self::feature_flag_enabled(
                 'WP_OIDC_KEYCLOAK_LOGIN_AUDIT'
-            ) ||
-            WP_OIDC_KEYCLOAK_LOGIN_AUDIT !== true
+            )
         ) {
             return;
         }
@@ -5653,21 +5970,15 @@ final class WP_OIDC_Keycloak_Integration
                 );
             }
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_provisioning_status',
+            self::update_compatible_user_meta($customerId, self::META_PROVISIONING_STATUS,
                 'complete'
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_provisioning_source',
+            self::update_compatible_user_meta($customerId, self::META_PROVISIONING_SOURCE,
                 'woocommerce_checkout'
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_provisioning_decision',
+            self::update_compatible_user_meta($customerId, self::META_PROVISIONING_DECISION,
                 sanitize_key(
                     (string) (
                         $result['decision'] ?? ''
@@ -5780,9 +6091,15 @@ final class WP_OIDC_Keycloak_Integration
          * Production behavior is the detected request
          * context unless trusted WordPress code changes it.
          */
-        return (bool) apply_filters(
-            'wp_oidc_keycloak_checkout_registration_request',
+        $legacyCompatible = (bool) apply_filters(
+            self::LEGACY_FILTER_CHECKOUT_REGISTRATION_REQUEST,
             $detected,
+            $customerData
+        );
+
+        return (bool) apply_filters(
+            self::FILTER_CHECKOUT_REGISTRATION_REQUEST,
+            $legacyCompatible,
             $customerData
         );
     }
@@ -5911,9 +6228,9 @@ final class WP_OIDC_Keycloak_Integration
     ): string {
         return add_query_arg(
             [
-                'wp_oidc_keycloak_claim_contribution' =>
+                self::QUERY_CLAIM_CONTRIBUTION =>
                     (string) $order->get_id(),
-                'wp_oidc_keycloak_claim_sig' =>
+                self::QUERY_CLAIM_SIGNATURE =>
                     self::open_contribution_claim_signature(
                         $order
                     ),
@@ -6052,26 +6369,22 @@ final class WP_OIDC_Keycloak_Integration
             $userId
         );
 
-        $order->update_meta_data(
-            '_wp_oidc_keycloak_guest_auto_link_user_id',
+        self::update_compatible_order_meta($order, self::META_GUEST_AUTO_LINK_USER_ID,
             (string) $userId
         );
 
-        $order->update_meta_data(
-            '_wp_oidc_keycloak_guest_auto_link_method',
+        self::update_compatible_order_meta($order, self::META_GUEST_AUTO_LINK_METHOD,
             'exact_billing_email'
         );
 
-        $order->update_meta_data(
-            '_wp_oidc_keycloak_guest_auto_link_email_sha256',
+        self::update_compatible_order_meta($order, self::META_GUEST_AUTO_LINK_EMAIL_SHA256,
             hash(
                 'sha256',
                 $billingEmail
             )
         );
 
-        $order->update_meta_data(
-            '_wp_oidc_keycloak_guest_auto_linked_at_utc',
+        self::update_compatible_order_meta($order, self::META_GUEST_AUTO_LINKED_AT_UTC,
             gmdate('c')
         );
 
@@ -6127,10 +6440,7 @@ final class WP_OIDC_Keycloak_Integration
         }
 
         $autoLinkedUserId = absint(
-            $order->get_meta(
-                '_wp_oidc_keycloak_guest_auto_link_user_id',
-                true
-            )
+            self::get_compatible_order_meta($order, self::META_GUEST_AUTO_LINK_USER_ID)
         );
 
         if (
@@ -6142,19 +6452,13 @@ final class WP_OIDC_Keycloak_Integration
         }
 
         if (
-            (string) $order->get_meta(
-                '_wp_oidc_keycloak_guest_auto_link_method',
-                true
-            ) !== 'exact_billing_email'
+            (string) self::get_compatible_order_meta($order, self::META_GUEST_AUTO_LINK_METHOD) !== 'exact_billing_email'
         ) {
             return false;
         }
 
         $linkedAt = trim(
-            (string) $order->get_meta(
-                '_wp_oidc_keycloak_guest_auto_linked_at_utc',
-                true
-            )
+            (string) self::get_compatible_order_meta($order, self::META_GUEST_AUTO_LINKED_AT_UTC)
         );
 
         $linkedTimestamp = strtotime($linkedAt);
@@ -6330,10 +6634,7 @@ final class WP_OIDC_Keycloak_Integration
         );
 
         $autoLinkedUserId = absint(
-            $order->get_meta(
-                '_wp_oidc_keycloak_guest_auto_link_user_id',
-                true
-            )
+            self::get_compatible_order_meta($order, self::META_GUEST_AUTO_LINK_USER_ID)
         );
 
         if (
@@ -6349,7 +6650,7 @@ final class WP_OIDC_Keycloak_Integration
                 ? 'The email used for the payment already belongs to a central account, so this contribution was linked automatically.'
                 : 'Το email που χρησιμοποιήθηκε στην πληρωμή αντιστοιχεί ήδη σε κεντρικό λογαριασμό, οπότε η συνεισφορά συνδέθηκε αυτόματα.';
 
-            echo '<section class="woocommerce-order-details wp-oidc-keycloak-contribution-account">';
+            echo '<section class="woocommerce-order-details wp-oidc-keycloak-contribution-account omniatv-keycloak-contribution-account">';
 
             echo '<h2 class="woocommerce-order-details__title">' .
                 esc_html($heading) .
@@ -6366,7 +6667,10 @@ final class WP_OIDC_Keycloak_Integration
 
         $status = sanitize_key(
             (string) (
-                $_GET['wp_oidc_keycloak_account_link'] ?? ''
+                self::query_parameter(
+                    self::QUERY_ACCOUNT_LINK,
+                    self::LEGACY_QUERY_ACCOUNT_LINK
+                ) ?? ''
             )
         );
 
@@ -6461,7 +6765,7 @@ final class WP_OIDC_Keycloak_Integration
             ? 'This is optional. Use the same email as the payment and this contribution will be linked to your account after authentication.'
             : 'Είναι προαιρετικό. Χρησιμοποίησε το ίδιο email με την πληρωμή και η συγκεκριμένη συνεισφορά θα συνδεθεί με τον λογαριασμό σου μετά την ταυτοποίηση.';
 
-        echo '<section class="woocommerce-order-details wp-oidc-keycloak-contribution-account">';
+        echo '<section class="woocommerce-order-details wp-oidc-keycloak-contribution-account omniatv-keycloak-contribution-account">';
 
         echo '<h2 class="woocommerce-order-details__title">' .
             esc_html($heading) .
@@ -6510,7 +6814,7 @@ final class WP_OIDC_Keycloak_Integration
         string $status
     ): void {
         $url = add_query_arg(
-            'wp_oidc_keycloak_account_link',
+            self::QUERY_ACCOUNT_LINK,
             sanitize_key($status),
             $order->get_checkout_order_received_url()
         );
@@ -6525,11 +6829,18 @@ final class WP_OIDC_Keycloak_Integration
      */
     public static function maybe_claim_guest_open_contribution_order(): void
     {
+        $rawOrderId = self::query_parameter(
+            self::QUERY_CLAIM_CONTRIBUTION,
+            self::LEGACY_QUERY_CLAIM_CONTRIBUTION
+        );
+        $rawSignature = self::query_parameter(
+            self::QUERY_CLAIM_SIGNATURE,
+            self::LEGACY_QUERY_CLAIM_SIGNATURE
+        );
+
         if (
-            !isset(
-                $_GET['wp_oidc_keycloak_claim_contribution'],
-                $_GET['wp_oidc_keycloak_claim_sig']
-            ) ||
+            $rawOrderId === null ||
+            $rawSignature === null ||
             !is_user_logged_in() ||
             !function_exists('wc_get_order')
         ) {
@@ -6537,15 +6848,11 @@ final class WP_OIDC_Keycloak_Integration
         }
 
         $orderId = absint(
-            wp_unslash(
-                $_GET['wp_oidc_keycloak_claim_contribution']
-            )
+            wp_unslash($rawOrderId)
         );
 
         $signature = sanitize_text_field(
-            wp_unslash(
-                $_GET['wp_oidc_keycloak_claim_sig']
-            )
+            wp_unslash($rawSignature)
         );
 
         if (
@@ -6658,18 +6965,15 @@ final class WP_OIDC_Keycloak_Integration
                 (int) $user->ID
             );
 
-            $order->update_meta_data(
-                '_wp_oidc_keycloak_guest_claim_user_id',
+            self::update_compatible_order_meta($order, self::META_GUEST_CLAIM_USER_ID,
                 (string) $user->ID
             );
 
-            $order->update_meta_data(
-                '_wp_oidc_keycloak_guest_claim_subject',
+            self::update_compatible_order_meta($order, self::META_GUEST_CLAIM_SUBJECT,
                 $subject
             );
 
-            $order->update_meta_data(
-                '_wp_oidc_keycloak_guest_claimed_at_utc',
+            self::update_compatible_order_meta($order, self::META_GUEST_CLAIMED_AT_UTC,
                 gmdate('c')
             );
 
@@ -6724,23 +7028,11 @@ final class WP_OIDC_Keycloak_Integration
             return true;
         }
 
-        $provisioningStatus = (string) get_user_meta(
-            $userId,
-            '_wp_oidc_keycloak_provisioning_status',
-            true
-        );
+        $provisioningStatus = (string) self::get_compatible_user_meta($userId, self::META_PROVISIONING_STATUS);
 
-        $provisioningSource = (string) get_user_meta(
-            $userId,
-            '_wp_oidc_keycloak_provisioning_source',
-            true
-        );
+        $provisioningSource = (string) self::get_compatible_user_meta($userId, self::META_PROVISIONING_SOURCE);
 
-        $activationEmailStatus = (string) get_user_meta(
-            $userId,
-            '_wp_oidc_keycloak_activation_email_status',
-            true
-        );
+        $activationEmailStatus = (string) self::get_compatible_user_meta($userId, self::META_ACTIVATION_EMAIL_STATUS);
 
         if (
             $provisioningStatus !== 'complete' ||
@@ -6768,14 +7060,14 @@ final class WP_OIDC_Keycloak_Integration
     ): void {
         foreach (
             [
-                '_wp_oidc_keycloak_activation_email_error',
-                '_wp_oidc_keycloak_activation_email_error_code',
-                '_wp_oidc_keycloak_activation_email_error_detail',
-                '_wp_oidc_keycloak_activation_email_error_sha256',
-                '_wp_oidc_keycloak_activation_email_failed_at_utc',
+                self::META_ACTIVATION_EMAIL_ERROR,
+                self::META_ACTIVATION_EMAIL_ERROR_CODE,
+                self::META_ACTIVATION_EMAIL_ERROR_DETAIL,
+                self::META_ACTIVATION_EMAIL_ERROR_SHA256,
+                self::META_ACTIVATION_EMAIL_FAILED_AT_UTC,
             ] as $metaKey
         ) {
-            delete_user_meta(
+            self::delete_compatible_user_meta(
                 $customerId,
                 $metaKey
             );
@@ -6795,9 +7087,7 @@ final class WP_OIDC_Keycloak_Integration
     ): void {
         $attemptedAt = gmdate('Y-m-d\TH:i:s\Z');
 
-        update_user_meta(
-            $customerId,
-            '_wp_oidc_keycloak_activation_email_last_attempt_at_utc',
+        self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_LAST_ATTEMPT_AT_UTC,
             $attemptedAt
         );
 
@@ -6845,16 +7135,12 @@ final class WP_OIDC_Keycloak_Integration
                 }
             }
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_activation_email_actions',
+            self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_ACTIONS,
                 implode(',', $supportedActions)
             );
 
             if ($supportedActions === []) {
-                update_user_meta(
-                    $customerId,
-                    '_wp_oidc_keycloak_activation_email_status',
+                self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_STATUS,
                     'not_required'
                 );
 
@@ -6874,15 +7160,11 @@ final class WP_OIDC_Keycloak_Integration
                 [204]
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_activation_email_status',
+            self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_STATUS,
                 'sent'
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_activation_email_sent_at_utc',
+            self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_SENT_AT_UTC,
                 gmdate('Y-m-d\TH:i:s\Z')
             );
 
@@ -6951,39 +7233,27 @@ final class WP_OIDC_Keycloak_Integration
                 $diagnosticMessage
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_activation_email_status',
+            self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_STATUS,
                 'pending'
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_activation_email_error',
+            self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_ERROR,
                 sanitize_key($exceptionClass)
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_activation_email_error_code',
+            self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_ERROR_CODE,
                 (string) $exceptionCode
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_activation_email_error_detail',
+            self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_ERROR_DETAIL,
                 $diagnosticMessage
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_activation_email_error_sha256',
+            self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_ERROR_SHA256,
                 $diagnosticHash
             );
 
-            update_user_meta(
-                $customerId,
-                '_wp_oidc_keycloak_activation_email_failed_at_utc',
+            self::update_compatible_user_meta($customerId, self::META_ACTIVATION_EMAIL_FAILED_AT_UTC,
                 gmdate('Y-m-d\TH:i:s\Z')
             );
 

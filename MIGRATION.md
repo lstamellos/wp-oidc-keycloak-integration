@@ -1,33 +1,14 @@
 # Migration from pre-generic OmniaTV builds
 
-Version `0.6.31` changes the runtime namespace from the deployment-specific OmniaTV names used by the `0.6.29` baseline to the generic `wp-oidc-keycloak` namespace.
+Version `0.6.32` is the migration-correctness release for deployments moving from the pre-generic `0.6.29` namespace to `wp-oidc-keycloak`.
 
-This migration is intentionally explicit. Do not leave the old and new MU-plugin files active at the same time, because both would register authentication/account hooks.
+The generic namespace is canonical for new configuration and newly written state. The release deliberately keeps a narrow compatibility layer for pre-generic runtime contracts so a namespace-only change cannot silently alter authentication, existing WooCommerce/WordPress state, or already generated account links.
 
-## 1. Rename server-side feature constants
+## 1. Define the provisioner config path before switching files
 
-Update any existing WordPress configuration definitions as follows:
+This is the one server-side migration setting that **must** exist before installation. The old `0.6.29` code embedded a deployment-specific path; the generic build does not.
 
-| Legacy constant | Generic constant |
-| --- | --- |
-| `OMNIATV_KEYCLOAK_FILTER_LOGIN_URLS` | `WP_OIDC_KEYCLOAK_FILTER_LOGIN_URLS` |
-| `OMNIATV_KEYCLOAK_REDIRECT_DIRECT_LOGIN` | `WP_OIDC_KEYCLOAK_REDIRECT_DIRECT_LOGIN` |
-| `OMNIATV_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION` | `WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION` |
-| `OMNIATV_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES` | `WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES` |
-| `OMNIATV_KEYCLOAK_LOGIN_AUDIT` | `WP_OIDC_KEYCLOAK_LOGIN_AUDIT` |
-
-If auto-update settings from a repository-preparation build were used, rename these too:
-
-| Legacy constant | Generic constant |
-| --- | --- |
-| `OMNIATV_KEYCLOAK_AUTO_UPDATE_ENABLED` | `WP_OIDC_KEYCLOAK_AUTO_UPDATE_ENABLED` |
-| `OMNIATV_KEYCLOAK_GITHUB_REPOSITORY` | `WP_OIDC_KEYCLOAK_GITHUB_REPOSITORY` |
-
-## 2. Define the provisioner config path explicitly
-
-The old code embedded the deployment path. The generic build does not.
-
-Define the absolute external path with:
+Define the absolute external path with either a WordPress constant or the environment variable:
 
 ```php
 define(
@@ -36,23 +17,93 @@ define(
 );
 ```
 
-The existing provisioner configuration file itself does not need to change merely because its path is now configured explicitly.
-
-## 3. Verify the required OIDC plugin
-
-`daggerhart-openid-connect-generic` must be active and version `3.11.3` or newer before the generic MU integration is installed.
-
-## 4. Replace the MU-plugin files as one maintenance operation
-
-Back up the existing files first. Install these new files:
+The existing provisioner configuration file itself retains the same keys:
 
 ```text
-wp-oidc-keycloak-integration.php
-wp-oidc-keycloak-updater.php
-wp-oidc-keycloak-templates/myaccount/form-edit-account.php
+KEYCLOAK_BASE_URL
+KEYCLOAK_ADMIN_BASE_URL
+KEYCLOAK_REALM
+KEYCLOAK_PROVISIONER_CLIENT_ID
+KEYCLOAK_PROVISIONER_SECRET_FILE
 ```
 
-Then remove the legacy runtime files/directories from `WPMU_PLUGIN_DIR`:
+The installer refuses to replace any MU-plugin file unless the configured path is absolute/readable, the configuration parses, both URLs are valid, all five keys exist, and the secret file is an absolute readable path.
+
+## 2. Feature constants: generic names are preferred, legacy names remain compatible
+
+Preferred names:
+
+| Legacy constant | Canonical generic constant |
+| --- | --- |
+| `OMNIATV_KEYCLOAK_FILTER_LOGIN_URLS` | `WP_OIDC_KEYCLOAK_FILTER_LOGIN_URLS` |
+| `OMNIATV_KEYCLOAK_REDIRECT_DIRECT_LOGIN` | `WP_OIDC_KEYCLOAK_REDIRECT_DIRECT_LOGIN` |
+| `OMNIATV_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION` | `WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION` |
+| `OMNIATV_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES` | `WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES` |
+| `OMNIATV_KEYCLOAK_LOGIN_AUDIT` | `WP_OIDC_KEYCLOAK_LOGIN_AUDIT` |
+| `OMNIATV_KEYCLOAK_AUTO_UPDATE_ENABLED` | `WP_OIDC_KEYCLOAK_AUTO_UPDATE_ENABLED` |
+| `OMNIATV_KEYCLOAK_GITHUB_REPOSITORY` | `WP_OIDC_KEYCLOAK_GITHUB_REPOSITORY` |
+
+`0.6.32` reads the generic constant first and falls back to its legacy equivalent when the generic constant is absent. An explicitly defined generic `false` therefore overrides a legacy `true`.
+
+This makes it safe to rename server configuration separately, but deployments should still migrate to the generic names.
+
+## 3. Persisted state and existing links are backward-compatible
+
+Pre-generic custom user/order metadata used the `_omniatv_keycloak_` prefix. The generic prefix is `_wp_oidc_keycloak_`.
+
+During migration, `0.6.32`:
+
+- reads the generic key first and falls back to the legacy key;
+- writes the generic key;
+- if a legacy key already exists, keeps it synchronized so rollback does not expose stale state;
+- deletes both forms when state is intentionally deleted;
+- does not create legacy metadata on a fresh generic installation.
+
+The same compatibility policy applies to the old account/claim query parameters and account-action values. Links already generated by `0.6.29` therefore continue to resolve, while newly generated links use the generic names.
+
+The old custom checkout-registration filter is invoked before the canonical generic filter so existing extension code remains effective.
+
+## 4. PHP/WP-Cron/WP-CLI/theme compatibility
+
+For the migration window, `0.6.32` also preserves these non-persistent contracts:
+
+- `OmniaTV_Keycloak_Integration` is registered as a class alias after MU plugins have loaded;
+- the old updater WP-Cron hook is recognized and removed in favor of the generic schedule;
+- the old updater lock option is honored/cleared;
+- `wp omniatv-keycloak update` remains an alias of `wp wp-oidc-keycloak update`;
+- legacy CSS classes are emitted alongside generic classes;
+- legacy DOM IDs and machine-readable WordPress error codes are retained where dual identifiers are not possible;
+- the legacy WordPress style handle remains registered/enqueued as an alias of the canonical generic handle.
+
+These aliases exist for migration safety, not as the preferred API for new integrations.
+
+## 5. Required OIDC dependency
+
+`daggerhart-openid-connect-generic` must be active and version `3.11.3` or newer.
+
+Both the installer and runtime integration enforce this requirement. The release updater also checks the version constraints in a release's `release.json` **before** replacing any file.
+
+## 6. Perform the migration atomically
+
+Use the supplied installer rather than manually copying the generic files over the legacy installation:
+
+```bash
+sudo bash scripts/install.sh --wp-path=/path/to/wordpress
+```
+
+The installer:
+
+1. runs source validation;
+2. verifies the OIDC dependency and provisioner configuration;
+3. refuses to operate if legacy and generic integration main files are already simultaneously present;
+4. creates a restorable backup of the relevant MU-plugin state;
+5. stages/lints all generic files;
+6. enables WordPress maintenance mode when needed;
+7. removes legacy runtime files and activates the generic files without invoking WordPress in the middle of the switch;
+8. verifies the generic class, migration class alias, OIDC dependency and WooCommerce template resolution;
+9. rolls back the exact pre-install MU-plugin state on failure.
+
+Legacy files removed by the migration are:
 
 ```text
 omniatv-keycloak-integration.php
@@ -60,11 +111,17 @@ omniatv-keycloak-updater.php
 omniatv-keycloak-templates/
 ```
 
-Do not serve normal traffic between installing the generic files and removing the legacy files.
+Canonical installed files are:
 
-## 5. Validate after migration
+```text
+wp-oidc-keycloak-integration.php
+wp-oidc-keycloak-updater.php
+wp-oidc-keycloak-templates/myaccount/form-edit-account.php
+```
 
-Check at minimum:
+## 7. Validate after migration
+
+At minimum:
 
 ```bash
 wp --path=/path/to/wordpress plugin status daggerhart-openid-connect-generic
@@ -72,4 +129,4 @@ wp --path=/path/to/wordpress plugin list --status=must-use
 wp --path=/path/to/wordpress wp-oidc-keycloak update
 ```
 
-Then test login, logout, registration, password recovery/change, WooCommerce My Account and any checkout provisioning flow used by the deployment.
+Then test login, logout, registration, password recovery/change, WooCommerce My Account, checkout provisioning, activation-email/account-link flows and guest-contribution claim flows used by the deployment.

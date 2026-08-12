@@ -6,7 +6,7 @@ A WordPress must-use integration that makes a Keycloak/OpenID Connect identity p
 
 ## Required dependency
 
-This integration requires the WordPress.org plugin **OpenID Connect Generic Client**:
+This integration requires **OpenID Connect Generic**:
 
 - WordPress.org slug: `daggerhart-openid-connect-generic`
 - supported minimum version: `3.11.3`
@@ -65,6 +65,11 @@ define('WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES', true);
 define('WP_OIDC_KEYCLOAK_LOGIN_AUDIT', false);
 ```
 
+
+### Legacy feature-flag fallback during migration
+
+For upgrades from pre-generic builds, the five `OMNIATV_KEYCLOAK_*` feature constants and the two updater configuration constants documented in `MIGRATION.md` remain supported as fallbacks. If a canonical `WP_OIDC_KEYCLOAK_*` constant is defined, it takes precedence. New deployments should use only the generic names.
+
 ## Auto-update model
 
 WordPress does not use its normal plugin updater for must-use plugins, so this project ships a separate MU updater.
@@ -77,8 +82,9 @@ The updater:
 4. accepts only `wp-oidc-keycloak-integration-vX.Y.Z.zip`;
 5. verifies the SHA-256 digest reported by the GitHub Releases API;
 6. verifies each deployable file against `release.json` inside the asset;
-7. stages and atomically replaces all deployment files;
-8. rolls back files already replaced if installation fails mid-update.
+7. enforces the WordPress/PHP/OIDC requirements declared by the release before replacing files;
+8. stages and atomically replaces all deployment files;
+9. rolls back replaced files and removes newly created files if installation fails mid-update.
 
 Auto-update is enabled by default and can be disabled with:
 
@@ -99,7 +105,7 @@ The updater assumes a public GitHub repository and stores no GitHub credential i
 
 ## Migration from pre-generic builds
 
-Deployments upgrading from the pre-generic `0.6.29` namespace must follow [`MIGRATION.md`](MIGRATION.md) so legacy and generic MU plugins are never active simultaneously.
+Deployments upgrading from the pre-generic `0.6.29` namespace must follow [`MIGRATION.md`](MIGRATION.md). The completed compatibility review is documented in [`docs/migration-audit-0.6.32.md`](docs/migration-audit-0.6.32.md). Version `0.6.32` includes a migration compatibility layer for legacy feature constants, persisted metadata, previously generated account/claim links, the old extension filter, class name, WP-CLI command, updater schedule/lock and theme CSS/style identifiers. Generic names remain canonical for new configuration and new state.
 
 ## Bootstrap installation
 
@@ -118,6 +124,8 @@ Optional installer parameters:
 ```
 
 The same values can be supplied through `WP_PATH`, `BACKUP_ROOT`, `OWNER` and `GROUP` environment variables. If owner/group are omitted, the installer uses the current ownership of `WPMU_PLUGIN_DIR`.
+
+Before changing any MU-plugin file, the installer requires `WP_OIDC_KEYCLOAK_PROVISIONER_CONFIG_PATH` to resolve in the actual WordPress runtime and verifies the external provisioner configuration and secret file. During a pre-generic migration it creates a backup, enters maintenance mode, removes the old `omniatv-*` runtime files as part of the same switch, validates the resulting WordPress runtime, and restores the previous state automatically if the migration fails.
 
 A forced update check can then be run with:
 

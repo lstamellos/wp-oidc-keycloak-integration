@@ -127,17 +127,17 @@ do_action('woocommerce_before_edit_account_form');
 
     <?php do_action('woocommerce_edit_account_form_fields'); ?>
 
-    <fieldset class="wp-oidc-keycloak-authority">
+    <fieldset class="wp-oidc-keycloak-authority omniatv-keycloak-authority">
         <legend><?php echo esc_html($securityLegend); ?></legend>
 
-        <p class="woocommerce-form-row woocommerce-form-row--wide form-row form-row-wide wp-oidc-keycloak-authority__email">
-            <label for="wp_oidc_keycloak_account_email">
+        <p class="woocommerce-form-row woocommerce-form-row--wide form-row form-row-wide wp-oidc-keycloak-authority__email omniatv-keycloak-authority__email">
+            <label for="omniatv_account_email">
                 <?php echo esc_html($emailLabel); ?>
             </label>
             <input
                 type="email"
                 class="woocommerce-Input woocommerce-Input--email input-text"
-                id="wp_oidc_keycloak_account_email"
+                id="omniatv_account_email"
                 value="<?php echo esc_attr($user->user_email); ?>"
                 readonly
                 disabled
@@ -152,7 +152,7 @@ do_action('woocommerce_before_edit_account_form');
         <p><?php echo esc_html($passwordDescription); ?></p>
 
         <?php if ($passwordActionUrl !== '') : ?>
-            <p class="wp-oidc-keycloak-authority__actions">
+            <p class="wp-oidc-keycloak-authority__actions omniatv-keycloak-authority__actions">
                 <a class="button" href="<?php echo esc_url($passwordActionUrl); ?>">
                     <?php echo esc_html($passwordButton); ?>
                 </a>

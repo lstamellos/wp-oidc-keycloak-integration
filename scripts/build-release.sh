@@ -66,6 +66,9 @@ with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9
             zf.write(path, path.relative_to(base).as_posix())
 PY
 
-sha256sum "$ASSET" > "$ASSET.sha256"
+(
+    cd "$DIST"
+    sha256sum "$(basename "$ASSET")" > "$(basename "$ASSET").sha256"
+)
 printf 'asset=%s\n' "$ASSET"
 cat "$ASSET.sha256"

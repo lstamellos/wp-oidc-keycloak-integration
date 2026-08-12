@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP OIDC Keycloak Updater
  * Description: Automatic stable-release updater for the WP OIDC Keycloak must-use integration.
- * Version: 0.6.31
+ * Version: 0.6.32
  * Author: OmniaTV
  * Author URI: https://omniatv.com/
  * Plugin URI: https://github.com/lstamellos/wp-oidc-keycloak-integration
@@ -17,11 +17,23 @@ if (!defined('ABSPATH')) {
 
 final class WP_OIDC_Keycloak_Updater
 {
-    private const VERSION = '0.6.31';
+    private const VERSION = '0.6.32';
     private const REPOSITORY = 'lstamellos/wp-oidc-keycloak-integration';
     private const CRON_HOOK = 'wp_oidc_keycloak_check_for_updates';
     private const LOCK_OPTION = 'wp_oidc_keycloak_update_lock';
     private const LOCK_TTL = 900;
+
+    /* Pre-generic updater aliases retained for migration compatibility. */
+    private const LEGACY_CRON_HOOK =
+        'omniatv_keycloak_check_for_updates';
+    private const LEGACY_LOCK_OPTION =
+        'omniatv_keycloak_update_lock';
+    private const LEGACY_AUTO_UPDATE_FLAG =
+        'OMNIATV_KEYCLOAK_AUTO_UPDATE_ENABLED';
+    private const LEGACY_REPOSITORY_FLAG =
+        'OMNIATV_KEYCLOAK_GITHUB_REPOSITORY';
+    private const OIDC_PLUGIN_SLUG =
+        'daggerhart-openid-connect-generic';
 
     /** @var array<string,string> */
     private const DEPLOYMENT_FILES = [
@@ -37,10 +49,18 @@ final class WP_OIDC_Keycloak_Updater
     {
         add_action('init', [self::class, 'ensure_schedule'], 20);
         add_action(self::CRON_HOOK, [self::class, 'run_scheduled_update']);
+        add_action(
+            self::LEGACY_CRON_HOOK,
+            [self::class, 'run_scheduled_update']
+        );
 
         if (defined('WP_CLI') && WP_CLI && class_exists('WP_CLI')) {
             WP_CLI::add_command(
                 'wp-oidc-keycloak update',
+                [self::class, 'run_cli_update']
+            );
+            WP_CLI::add_command(
+                'omniatv-keycloak update',
                 [self::class, 'run_cli_update']
             );
         }
@@ -48,7 +68,13 @@ final class WP_OIDC_Keycloak_Updater
 
     public static function ensure_schedule(): void
     {
-        if (!self::enabled() || !self::is_primary_site()) {
+        if (!self::is_primary_site()) {
+            return;
+        }
+
+        self::remove_legacy_schedule();
+
+        if (!self::enabled()) {
             return;
         }
 
@@ -57,6 +83,18 @@ final class WP_OIDC_Keycloak_Updater
                 time() + 300,
                 'twicedaily',
                 self::CRON_HOOK
+            );
+        }
+    }
+
+    private static function remove_legacy_schedule(): void
+    {
+        while (
+            ($timestamp = wp_next_scheduled(self::LEGACY_CRON_HOOK)) !== false
+        ) {
+            wp_unschedule_event(
+                $timestamp,
+                self::LEGACY_CRON_HOOK
             );
         }
     }
@@ -97,8 +135,15 @@ final class WP_OIDC_Keycloak_Updater
 
     private static function enabled(): bool
     {
-        return !defined('WP_OIDC_KEYCLOAK_AUTO_UPDATE_ENABLED') ||
-            WP_OIDC_KEYCLOAK_AUTO_UPDATE_ENABLED === true;
+        if (defined('WP_OIDC_KEYCLOAK_AUTO_UPDATE_ENABLED')) {
+            return WP_OIDC_KEYCLOAK_AUTO_UPDATE_ENABLED === true;
+        }
+
+        if (defined(self::LEGACY_AUTO_UPDATE_FLAG)) {
+            return constant(self::LEGACY_AUTO_UPDATE_FLAG) === true;
+        }
+
+        return true;
     }
 
     private static function is_primary_site(): bool
@@ -114,6 +159,17 @@ final class WP_OIDC_Keycloak_Updater
             trim(WP_OIDC_KEYCLOAK_GITHUB_REPOSITORY) !== ''
         ) {
             return trim(WP_OIDC_KEYCLOAK_GITHUB_REPOSITORY);
+        }
+
+        if (defined(self::LEGACY_REPOSITORY_FLAG)) {
+            $legacyRepository = constant(self::LEGACY_REPOSITORY_FLAG);
+
+            if (
+                is_string($legacyRepository) &&
+                trim($legacyRepository) !== ''
+            ) {
+                return trim($legacyRepository);
+            }
         }
 
         return self::REPOSITORY;
@@ -373,7 +429,10 @@ final class WP_OIDC_Keycloak_Updater
 
         $actual = hash_file('sha256', $archive);
 
-        if (!hash_equals($matches[1], strtolower($actual))) {
+        if (
+            !is_string($actual) ||
+            !hash_equals($matches[1], strtolower($actual))
+        ) {
             @unlink($archive);
             throw new RuntimeException(
                 'Release asset SHA-256 verification failed.'
@@ -433,16 +492,9 @@ final class WP_OIDC_Keycloak_Updater
 
             self::atomic_install_files(
                 $packageDir,
-                $backupDir
+                $backupDir,
+                $version
             );
-
-            $installedVersion = self::current_version();
-
-            if ($installedVersion !== $version) {
-                throw new RuntimeException(
-                    'Installed version does not match release version.'
-                );
-            }
         } finally {
             self::remove_tree($workDir);
         }
@@ -467,6 +519,10 @@ final class WP_OIDC_Keycloak_Updater
             );
         }
 
+        self::validate_runtime_requirements(
+            $manifest['requires'] ?? null
+        );
+
         foreach (self::DEPLOYMENT_FILES as $source => $destination) {
             unset($destination);
             $expected = $manifest['files'][$source] ?? '';
@@ -484,7 +540,10 @@ final class WP_OIDC_Keycloak_Updater
 
             $actual = hash_file('sha256', $path);
 
-            if (!hash_equals($expected, strtolower($actual))) {
+            if (
+                !is_string($actual) ||
+                !hash_equals($expected, strtolower($actual))
+            ) {
                 throw new RuntimeException(
                     'Release file SHA-256 verification failed: ' .
                     $source
@@ -514,9 +573,145 @@ final class WP_OIDC_Keycloak_Updater
         }
     }
 
+    /** @param mixed $requirements */
+    private static function validate_runtime_requirements(
+        $requirements
+    ): void {
+        if (!is_array($requirements)) {
+            throw new RuntimeException(
+                'Release runtime requirements are missing.'
+            );
+        }
+
+        self::assert_minimum_constraint(
+            'WordPress',
+            (string) get_bloginfo('version'),
+            $requirements['wordpress'] ?? null
+        );
+        self::assert_minimum_constraint(
+            'PHP',
+            PHP_VERSION,
+            $requirements['php'] ?? null
+        );
+
+        $plugins = $requirements['plugins'] ?? null;
+
+        if (
+            !is_array($plugins) ||
+            !isset($plugins[self::OIDC_PLUGIN_SLUG])
+        ) {
+            throw new RuntimeException(
+                'Release OIDC dependency requirement is missing.'
+            );
+        }
+
+        $installedOidcVersion = self::installed_plugin_version(
+            self::OIDC_PLUGIN_SLUG
+        );
+
+        if ($installedOidcVersion === '') {
+            throw new RuntimeException(
+                'Required OIDC plugin is not installed.'
+            );
+        }
+
+        if (!class_exists('OpenID_Connect_Generic')) {
+            throw new RuntimeException(
+                'Required OIDC plugin is not active.'
+            );
+        }
+
+        self::assert_minimum_constraint(
+            'OIDC plugin',
+            $installedOidcVersion,
+            $plugins[self::OIDC_PLUGIN_SLUG]
+        );
+    }
+
+    private static function assert_minimum_constraint(
+        string $label,
+        string $installedVersion,
+        mixed $constraint
+    ): void {
+        $constraint = is_string($constraint)
+            ? trim($constraint)
+            : '';
+
+        if (
+            !preg_match(
+                '/^>=\s*([0-9]+(?:\.[0-9]+){1,3})$/',
+                $constraint,
+                $matches
+            )
+        ) {
+            throw new RuntimeException(
+                $label . ' release requirement is invalid.'
+            );
+        }
+
+        $minimumVersion = $matches[1];
+
+        if (
+            $installedVersion === '' ||
+            version_compare(
+                $installedVersion,
+                $minimumVersion,
+                '<'
+            )
+        ) {
+            throw new RuntimeException(
+                sprintf(
+                    '%s %s or newer is required; detected %s.',
+                    $label,
+                    $minimumVersion,
+                    $installedVersion !== ''
+                        ? $installedVersion
+                        : 'unknown'
+                )
+            );
+        }
+    }
+
+    private static function installed_plugin_version(
+        string $slug
+    ): string {
+        if (!function_exists('get_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+
+        if (!function_exists('get_plugins')) {
+            return '';
+        }
+
+        foreach (get_plugins() as $pluginFile => $metadata) {
+            if (!is_array($metadata)) {
+                continue;
+            }
+
+            $directory = dirname((string) $pluginFile);
+            $textDomain = isset($metadata['TextDomain'])
+                ? (string) $metadata['TextDomain']
+                : '';
+
+            if (
+                $directory !== $slug &&
+                $textDomain !== $slug
+            ) {
+                continue;
+            }
+
+            return isset($metadata['Version'])
+                ? trim((string) $metadata['Version'])
+                : '';
+        }
+
+        return '';
+    }
+
     private static function atomic_install_files(
         string $packageDir,
-        string $backupDir
+        string $backupDir,
+        string $expectedVersion
     ): void {
         $replaced = [];
 
@@ -543,7 +738,9 @@ final class WP_OIDC_Keycloak_Updater
                 $backupPath = $backupDir . '/' . $source;
                 wp_mkdir_p(dirname($backupPath));
 
-                if (is_file($destinationPath)) {
+                $hadOriginal = is_file($destinationPath);
+
+                if ($hadOriginal) {
                     if (!copy($destinationPath, $backupPath)) {
                         throw new RuntimeException(
                             'Cannot back up destination file: ' .
@@ -573,7 +770,21 @@ final class WP_OIDC_Keycloak_Updater
                     );
                 }
 
-                $replaced[] = $source;
+                $replaced[] = [
+                    'source' => $source,
+                    'had_original' => $hadOriginal,
+                ];
+            }
+
+            /*
+             * Keep the post-install verification inside the rollback scope.
+             * A release that somehow activates with an unexpected header must
+             * restore the previous complete file set rather than merely fail.
+             */
+            if (self::current_version() !== $expectedVersion) {
+                throw new RuntimeException(
+                    'Installed version does not match release version.'
+                );
             }
         } catch (Throwable $exception) {
             self::rollback_files($replaced, $backupDir);
@@ -581,38 +792,54 @@ final class WP_OIDC_Keycloak_Updater
         }
     }
 
-    /** @param list<string> $replaced */
+    /**
+     * @param list<array{source:string,had_original:bool}> $replaced
+     */
     private static function rollback_files(
         array $replaced,
         string $backupDir
     ): void {
-        foreach (array_reverse($replaced) as $source) {
+        foreach (array_reverse($replaced) as $entry) {
+            $source = $entry['source'];
             $destination = self::DEPLOYMENT_FILES[$source];
             $destinationPath = WPMU_PLUGIN_DIR . '/' . $destination;
             $backupPath = $backupDir . '/' . $source;
 
-            if (is_file($backupPath)) {
+            if ($entry['had_original'] && is_file($backupPath)) {
                 @copy($backupPath, $destinationPath);
                 @chmod($destinationPath, 0644);
+                continue;
+            }
+
+            if (!$entry['had_original']) {
+                @unlink($destinationPath);
             }
         }
     }
 
     private static function acquire_lock(): void
     {
-        $existing = get_site_option(self::LOCK_OPTION, 0);
-
-        if (
-            is_numeric($existing) &&
-            (int) $existing > 0 &&
-            (time() - (int) $existing) < self::LOCK_TTL
+        foreach (
+            [
+                self::LOCK_OPTION,
+                self::LEGACY_LOCK_OPTION,
+            ] as $lockOption
         ) {
-            throw new RuntimeException(
-                'Another WP OIDC Keycloak update is already running.'
-            );
+            $existing = get_site_option($lockOption, 0);
+
+            if (
+                is_numeric($existing) &&
+                (int) $existing > 0 &&
+                (time() - (int) $existing) < self::LOCK_TTL
+            ) {
+                throw new RuntimeException(
+                    'Another WP OIDC Keycloak update is already running.'
+                );
+            }
         }
 
         delete_site_option(self::LOCK_OPTION);
+        delete_site_option(self::LEGACY_LOCK_OPTION);
 
         if (!add_site_option(self::LOCK_OPTION, time())) {
             throw new RuntimeException(
