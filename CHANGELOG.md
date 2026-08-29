@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.33 — 2026-08-29
+
+- Add opt-in `WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION` enforcement through WordPress core's `xmlrpc_enabled` filter, disabling authenticated XML-RPC methods without removing the endpoint.
+- Reject ordinary credential-bearing native `POST /wp-login.php` requests at `login_init` priority `-100`, before the WordPress/Wordfence password-authentication pipeline, while retaining the existing terminal `authenticate` blocker as defense in depth.
+- Keep XML-RPC hardening disabled by default for generic deployments that intentionally depend on authenticated XML-RPC.
+
 ## 0.6.32 — 2026-08-13
 
 - Re-audit the complete `0.6.29` → generic namespace migration as a compatibility migration rather than a textual rename.

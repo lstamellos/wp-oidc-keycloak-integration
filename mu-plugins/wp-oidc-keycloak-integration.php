@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP OIDC Keycloak Integration
  * Description: Keycloak/OIDC account-authority integration for WordPress and WooCommerce.
- * Version: 0.6.32
+ * Version: 0.6.33
  * Requires at least: 6.5
  * Requires PHP: 8.0
  * Requires Plugins: daggerhart-openid-connect-generic
@@ -619,6 +619,18 @@ final class WP_OIDC_Keycloak_Integration
             3
         );
 
+        /*
+         * Reject ordinary native wp-login.php credential POSTs before
+         * WordPress or security plugins enter the password-authentication
+         * pipeline. The terminal authenticate filter below remains as a
+         * second line of defense for other interactive native surfaces.
+         */
+        add_action(
+            'login_init',
+            [self::class, 'block_native_login_post_early'],
+            -100
+        );
+
         add_action(
             'login_init',
             [self::class, 'maybe_redirect_direct_login'],
@@ -630,6 +642,19 @@ final class WP_OIDC_Keycloak_Integration
             [self::class, 'block_native_authentication'],
             1000,
             3
+        );
+
+        /*
+         * XML-RPC can invoke wp_authenticate() independently of the
+         * interactive login UI. Deployments that make OIDC authoritative
+         * may opt in to disabling authenticated XML-RPC methods while
+         * leaving non-authenticated XML-RPC functionality available.
+         */
+        add_filter(
+            'xmlrpc_enabled',
+            [self::class, 'filter_xmlrpc_authentication_enabled'],
+            PHP_INT_MAX,
+            1
         );
 
         /*
@@ -1864,6 +1889,69 @@ final class WP_OIDC_Keycloak_Integration
 
         wp_safe_redirect($authenticationUrl);
         exit;
+    }
+
+    /**
+     * Reject an ordinary native credential-bearing POST to wp-login.php
+     * before wp_signon() enters the authenticate filter chain.
+     *
+     * Special wp-login.php actions remain outside this guard because the
+     * existing login-surface classifier does not classify them as native
+     * credential authentication.
+     */
+    public static function block_native_login_post_early(): void
+    {
+        $context = self::current_login_surface_context();
+        $surface = self::classify_login_surface($context);
+        $method = strtoupper((string) ($context['method'] ?? ''));
+
+        if (
+            $method !== 'POST' ||
+            $surface !== 'wp_login_native_credentials' ||
+            !self::should_block_native_authentication($surface)
+        ) {
+            return;
+        }
+
+        wp_die(
+            esc_html__(
+                'Password login is disabled. Please sign in with OpenID Connect.',
+                'wp-oidc-keycloak-integration'
+            ),
+            esc_html__(
+                'Authentication disabled',
+                'wp-oidc-keycloak-integration'
+            ),
+            ['response' => 403]
+        );
+    }
+
+    /**
+     * Report whether authenticated XML-RPC methods should be disabled.
+     *
+     * This is intentionally opt-in so generic deployments that depend on
+     * authenticated XML-RPC are not changed by upgrading.
+     */
+    public static function xmlrpc_authentication_blocking_enabled(): bool
+    {
+        return self::feature_flag_enabled(
+            'WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION'
+        );
+    }
+
+    /**
+     * Disable only XML-RPC methods that require WordPress authentication.
+     * WordPress core applies this filter to authenticated XML-RPC methods;
+     * it does not remove the XML-RPC endpoint itself.
+     */
+    public static function filter_xmlrpc_authentication_enabled(
+        bool $enabled
+    ): bool {
+        if (!self::xmlrpc_authentication_blocking_enabled()) {
+            return $enabled;
+        }
+
+        return false;
     }
 
     /**

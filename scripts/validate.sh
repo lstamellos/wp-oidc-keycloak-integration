@@ -47,6 +47,19 @@ grep -Fq "'WP_OIDC_KEYCLOAK_PROVISIONER_CONFIG_PATH'" "$PLUGIN" || {
     exit 1
 }
 
+grep -Fq "'WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION'" "$PLUGIN" || {
+    echo 'ERROR: XML-RPC authentication hardening flag is missing.' >&2
+    exit 1
+}
+grep -Fq "[self::class, 'block_native_login_post_early']" "$PLUGIN" || {
+    echo 'ERROR: early native login POST blocker is missing.' >&2
+    exit 1
+}
+grep -Fq "[self::class, 'filter_xmlrpc_authentication_enabled']" "$PLUGIN" || {
+    echo 'ERROR: XML-RPC authentication filter is missing.' >&2
+    exit 1
+}
+
 python3 - "$ROOT" <<'PY'
 from pathlib import Path
 import re

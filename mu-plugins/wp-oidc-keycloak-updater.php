@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP OIDC Keycloak Updater
  * Description: Automatic stable-release updater for the WP OIDC Keycloak must-use integration.
- * Version: 0.6.32
+ * Version: 0.6.33
  * Author: OmniaTV
  * Author URI: https://omniatv.com/
  * Plugin URI: https://github.com/lstamellos/wp-oidc-keycloak-integration
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 
 final class WP_OIDC_Keycloak_Updater
 {
-    private const VERSION = '0.6.32';
+    private const VERSION = '0.6.33';
     private const REPOSITORY = 'lstamellos/wp-oidc-keycloak-integration';
     private const CRON_HOOK = 'wp_oidc_keycloak_check_for_updates';
     private const LOCK_OPTION = 'wp_oidc_keycloak_update_lock';
