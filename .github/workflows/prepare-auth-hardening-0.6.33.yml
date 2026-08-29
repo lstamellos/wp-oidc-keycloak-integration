@@ -1,0 +1,129 @@
+name: Prepare auth hardening 0.6.33
+
+on:
+  push:
+    branches:
+      - auth-hardening-0.6.33
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: github.ref_name == 'auth-hardening-0.6.33' && github.event.head_commit.message != 'Prepare authentication hardening 0.6.33'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: auth-hardening-0.6.33
+          fetch-depth: 0
+
+      - name: Apply deterministic hardening patch
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one anchor, found {count}')
+              return text.replace(old, new, 1)
+
+          main = Path('mu-plugins/wp-oidc-keycloak-integration.php')
+          text = main.read_text(encoding='utf-8')
+          text = replace_once(text, ' * Version: 0.6.32', ' * Version: 0.6.33', 'main version')
+
+          bootstrap_anchor = """        add_action(\n            'login_init',\n            [self::class, 'maybe_redirect_direct_login'],\n            1\n        );\n\n        add_filter(\n            'authenticate',\n            [self::class, 'block_native_authentication'],\n            1000,\n            3\n        );\n"""
+          bootstrap_new = """        /*\n         * Reject ordinary native wp-login.php credential POSTs before\n         * WordPress or security plugins enter the password-authentication\n         * pipeline. The terminal authenticate filter below remains as a\n         * second line of defense for other interactive native surfaces.\n         */\n        add_action(\n            'login_init',\n            [self::class, 'block_native_login_post_early'],\n            -100\n        );\n\n        add_action(\n            'login_init',\n            [self::class, 'maybe_redirect_direct_login'],\n            1\n        );\n\n        add_filter(\n            'authenticate',\n            [self::class, 'block_native_authentication'],\n            1000,\n            3\n        );\n\n        /*\n         * XML-RPC can invoke wp_authenticate() independently of the\n         * interactive login UI. Deployments that make OIDC authoritative\n         * may opt in to disabling authenticated XML-RPC methods while\n         * leaving non-authenticated XML-RPC functionality available.\n         */\n        add_filter(\n            'xmlrpc_enabled',\n            [self::class, 'filter_xmlrpc_authentication_enabled'],\n            PHP_INT_MAX,\n            1\n        );\n"""
+          text = replace_once(text, bootstrap_anchor, bootstrap_new, 'bootstrap hardening hooks')
+
+          method_anchor = """    /**\n     * Report whether native username/password authentication\n     * should be rejected.\n     */\n    public static function native_authentication_blocking_enabled(): bool\n"""
+          method_new = """    /**\n     * Reject an ordinary native credential-bearing POST to wp-login.php\n     * before wp_signon() enters the authenticate filter chain.\n     *\n     * Special wp-login.php actions remain outside this guard because the\n     * existing login-surface classifier does not classify them as native\n     * credential authentication.\n     */\n    public static function block_native_login_post_early(): void\n    {\n        $context = self::current_login_surface_context();\n        $surface = self::classify_login_surface($context);\n        $method = strtoupper((string) ($context['method'] ?? ''));\n\n        if (\n            $method !== 'POST' ||\n            $surface !== 'wp_login_native_credentials' ||\n            !self::should_block_native_authentication($surface)\n        ) {\n            return;\n        }\n\n        wp_die(\n            esc_html__(\n                'Password login is disabled. Please sign in with OpenID Connect.',\n                'wp-oidc-keycloak-integration'\n            ),\n            esc_html__(\n                'Authentication disabled',\n                'wp-oidc-keycloak-integration'\n            ),\n            ['response' => 403]\n        );\n    }\n\n    /**\n     * Report whether authenticated XML-RPC methods should be disabled.\n     *\n     * This is intentionally opt-in so generic deployments that depend on\n     * authenticated XML-RPC are not changed by upgrading.\n     */\n    public static function xmlrpc_authentication_blocking_enabled(): bool\n    {\n        return self::feature_flag_enabled(\n            'WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION'\n        );\n    }\n\n    /**\n     * Disable only XML-RPC methods that require WordPress authentication.\n     * WordPress core applies this filter to authenticated XML-RPC methods;\n     * it does not remove the XML-RPC endpoint itself.\n     */\n    public static function filter_xmlrpc_authentication_enabled(\n        bool $enabled\n    ): bool {\n        if (!self::xmlrpc_authentication_blocking_enabled()) {\n            return $enabled;\n        }\n\n        return false;\n    }\n\n    /**\n     * Report whether native username/password authentication\n     * should be rejected.\n     */\n    public static function native_authentication_blocking_enabled(): bool\n"""
+          text = replace_once(text, method_anchor, method_new, 'hardening methods')
+
+          text = replace_once(
+              text,
+              '     * Reject native interactive password authentication while\\n     * preserving OIDC callbacks, REST, XML-RPC, checkout account\\n     * creation and special login actions.',
+              '     * Reject native interactive password authentication while\\n     * preserving OIDC callbacks, REST, checkout account creation and\\n     * special login actions. XML-RPC authentication is governed separately\\n     * by WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION.',
+              'native blocker documentation',
+          )
+          main.write_text(text, encoding='utf-8')
+
+          updater = Path('mu-plugins/wp-oidc-keycloak-updater.php')
+          text = updater.read_text(encoding='utf-8')
+          text = replace_once(text, ' * Version: 0.6.32', ' * Version: 0.6.33', 'updater header version')
+          text = replace_once(text, "private const VERSION = '0.6.32';", "private const VERSION = '0.6.33';", 'updater runtime version')
+          updater.write_text(text, encoding='utf-8')
+
+          installer = Path('scripts/install.sh')
+          text = installer.read_text(encoding='utf-8')
+          text = replace_once(text, "printf 'version=0.6.32\\n'", "printf 'version=0.6.33\\n'", 'installer version')
+          installer.write_text(text, encoding='utf-8')
+
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+          flag_anchor = """define('WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION', true);\ndefine('WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES', true);\n"""
+          flag_new = """define('WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION', true);\ndefine('WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION', false);\ndefine('WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES', true);\n"""
+          text = replace_once(text, flag_anchor, flag_new, 'README flag list')
+          security_anchor = """## Security notes\n\n- No Keycloak client secret is committed to Git.\n"""
+          security_new = """## Security notes\n\n- When `WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION` is enabled, ordinary credential-bearing `POST /wp-login.php` requests are rejected before WordPress enters the native password-authentication filter chain; the existing terminal `authenticate` blocker remains in place as defense in depth.\n- `WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION` is opt-in and defaults to false. When enabled, authenticated XML-RPC methods are disabled through WordPress core's `xmlrpc_enabled` filter without removing the XML-RPC endpoint or unauthenticated methods.\n- No Keycloak client secret is committed to Git.\n"""
+          text = replace_once(text, security_anchor, security_new, 'README security notes')
+          readme.write_text(text, encoding='utf-8')
+
+          changelog = Path('CHANGELOG.md')
+          text = changelog.read_text(encoding='utf-8')
+          heading = '# Changelog\n\n'
+          entry = """# Changelog\n\n## 0.6.33 — 2026-08-29\n\n- Add opt-in `WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION` enforcement through WordPress core's `xmlrpc_enabled` filter, disabling authenticated XML-RPC methods without removing the endpoint.\n- Reject ordinary credential-bearing native `POST /wp-login.php` requests at `login_init` priority `-100`, before the WordPress/Wordfence password-authentication pipeline, while retaining the existing terminal `authenticate` blocker as defense in depth.\n- Keep XML-RPC hardening disabled by default for generic deployments that intentionally depend on authenticated XML-RPC.\n\n"""
+          text = replace_once(text, heading, entry, 'changelog heading')
+          changelog.write_text(text, encoding='utf-8')
+
+          validate = Path('scripts/validate.sh')
+          text = validate.read_text(encoding='utf-8')
+          validation_anchor = """grep -Fq \"'WP_OIDC_KEYCLOAK_PROVISIONER_CONFIG_PATH'\" \"$PLUGIN\" || {\n    echo 'ERROR: generic provisioner config-path setting is missing.' >&2\n    exit 1\n}\n\n"""
+          validation_new = validation_anchor + """grep -Fq \"'WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION'\" \"$PLUGIN\" || {\n    echo 'ERROR: XML-RPC authentication hardening flag is missing.' >&2\n    exit 1\n}\ngrep -Fq \"[self::class, 'block_native_login_post_early']\" \"$PLUGIN\" || {\n    echo 'ERROR: early native login POST blocker is missing.' >&2\n    exit 1\n}\ngrep -Fq \"[self::class, 'filter_xmlrpc_authentication_enabled']\" \"$PLUGIN\" || {\n    echo 'ERROR: XML-RPC authentication filter is missing.' >&2\n    exit 1\n}\n\n"""
+          text = replace_once(text, validation_anchor, validation_new, 'shell validation assertions')
+          validate.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validate patched release
+        run: bash scripts/validate.sh v0.6.33
+
+      - name: Build release package
+        run: bash scripts/build-release.sh v0.6.33
+
+      - name: Commit patched release source
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add mu-plugins/wp-oidc-keycloak-integration.php \
+                  mu-plugins/wp-oidc-keycloak-updater.php \
+                  scripts/install.sh scripts/validate.sh \
+                  README.md CHANGELOG.md
+          git commit -m 'Prepare authentication hardening 0.6.33'
+          git push origin HEAD:auth-hardening-0.6.33
+
+  tag-release:
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Tag validated 0.6.33 release once
+        run: |
+          VERSION="$(sed -nE 's/^[[:space:]]*\*[[:space:]]*Version:[[:space:]]*([^[:space:]]+).*/\1/p' mu-plugins/wp-oidc-keycloak-integration.php | head -n1)"
+          if [ "$VERSION" != '0.6.33' ]; then
+            echo "Current version is $VERSION; no 0.6.33 tag action."
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin refs/tags/v0.6.33 >/dev/null 2>&1; then
+            echo 'v0.6.33 already exists.'
+            exit 0
+          fi
+          bash scripts/validate.sh v0.6.33
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a v0.6.33 -m 'WP OIDC Keycloak Integration 0.6.33'
+          git push origin v0.6.33
