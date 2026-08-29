@@ -61,6 +61,7 @@ The following feature flags are available as server-side WordPress constants:
 define('WP_OIDC_KEYCLOAK_FILTER_LOGIN_URLS', true);
 define('WP_OIDC_KEYCLOAK_REDIRECT_DIRECT_LOGIN', true);
 define('WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION', true);
+define('WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION', false);
 define('WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES', true);
 define('WP_OIDC_KEYCLOAK_LOGIN_AUDIT', false);
 ```
@@ -150,6 +151,8 @@ Draft and prerelease GitHub releases are ignored by the updater.
 
 ## Security notes
 
+- When `WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION` is enabled, ordinary credential-bearing `POST /wp-login.php` requests are rejected before WordPress enters the native password-authentication filter chain; the existing terminal `authenticate` blocker remains in place as defense in depth.
+- `WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION` is opt-in and defaults to false. When enabled, authenticated XML-RPC methods are disabled through WordPress core's `xmlrpc_enabled` filter without removing the XML-RPC endpoint or unauthenticated methods.
 - No Keycloak client secret is committed to Git.
 - No deployment hostname, identity-provider URI or server home path is embedded in the runtime code.
 - The OIDC dependency is checked before the integration boots.

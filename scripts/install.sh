@@ -343,5 +343,5 @@ printf 'provisioner_config_path=%s\n' "$PROVISIONER_CONFIG_PATH"
 printf 'backup_dir=%s\n' "$BACKUP"
 printf 'legacy_artifacts_removed=yes\n'
 printf 'maintenance_preexisting=%s\n' "$PREEXISTING_MAINTENANCE"
-printf 'version=0.6.32\n'
+printf 'version=0.6.33\n'
 echo 'bootstrap_install=yes'
