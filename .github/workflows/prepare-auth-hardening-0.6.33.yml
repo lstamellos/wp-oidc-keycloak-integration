@@ -4,14 +4,13 @@ on:
   push:
     branches:
       - auth-hardening-0.6.33
-      - main
 
 permissions:
   contents: write
 
 jobs:
   prepare:
-    if: github.ref_name == 'auth-hardening-0.6.33' && github.event.head_commit.message != 'Prepare authentication hardening 0.6.33'
+    if: github.event.head_commit.message != 'Prepare authentication hardening 0.6.33'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +19,7 @@ jobs:
           fetch-depth: 0
 
       - name: Apply deterministic hardening patch
+        shell: bash
         run: |
           python3 <<'PY'
           from pathlib import Path
@@ -256,28 +256,3 @@ grep -Fq "[self::class, 'filter_xmlrpc_authentication_enabled']" "$PLUGIN" || {
                   README.md CHANGELOG.md
           git commit -m 'Prepare authentication hardening 0.6.33'
           git push origin HEAD:auth-hardening-0.6.33
-
-  tag-release:
-    if: github.ref_name == 'main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Tag validated 0.6.33 release once
-        run: |
-          VERSION="$(sed -nE 's/^[[:space:]]*\*[[:space:]]*Version:[[:space:]]*([^[:space:]]+).*/\1/p' mu-plugins/wp-oidc-keycloak-integration.php | head -n1)"
-          if [ "$VERSION" != '0.6.33' ]; then
-            echo "Current version is $VERSION; no 0.6.33 tag action."
-            exit 0
-          fi
-          if git ls-remote --exit-code --tags origin refs/tags/v0.6.33 >/dev/null 2>&1; then
-            echo 'v0.6.33 already exists.'
-            exit 0
-          fi
-          bash scripts/validate.sh v0.6.33
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git tag -a v0.6.33 -m 'WP OIDC Keycloak Integration 0.6.33'
-          git push origin v0.6.33
