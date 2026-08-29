@@ -34,20 +34,135 @@ jobs:
           text = main.read_text(encoding='utf-8')
           text = replace_once(text, ' * Version: 0.6.32', ' * Version: 0.6.33', 'main version')
 
-          bootstrap_anchor = """        add_action(\n            'login_init',\n            [self::class, 'maybe_redirect_direct_login'],\n            1\n        );\n\n        add_filter(\n            'authenticate',\n            [self::class, 'block_native_authentication'],\n            1000,\n            3\n        );\n"""
-          bootstrap_new = """        /*\n         * Reject ordinary native wp-login.php credential POSTs before\n         * WordPress or security plugins enter the password-authentication\n         * pipeline. The terminal authenticate filter below remains as a\n         * second line of defense for other interactive native surfaces.\n         */\n        add_action(\n            'login_init',\n            [self::class, 'block_native_login_post_early'],\n            -100\n        );\n\n        add_action(\n            'login_init',\n            [self::class, 'maybe_redirect_direct_login'],\n            1\n        );\n\n        add_filter(\n            'authenticate',\n            [self::class, 'block_native_authentication'],\n            1000,\n            3\n        );\n\n        /*\n         * XML-RPC can invoke wp_authenticate() independently of the\n         * interactive login UI. Deployments that make OIDC authoritative\n         * may opt in to disabling authenticated XML-RPC methods while\n         * leaving non-authenticated XML-RPC functionality available.\n         */\n        add_filter(\n            'xmlrpc_enabled',\n            [self::class, 'filter_xmlrpc_authentication_enabled'],\n            PHP_INT_MAX,\n            1\n        );\n"""
+          bootstrap_anchor = """        add_action(
+            'login_init',
+            [self::class, 'maybe_redirect_direct_login'],
+            1
+        );
+
+        add_filter(
+            'authenticate',
+            [self::class, 'block_native_authentication'],
+            1000,
+            3
+        );
+"""
+          bootstrap_new = """        /*
+         * Reject ordinary native wp-login.php credential POSTs before
+         * WordPress or security plugins enter the password-authentication
+         * pipeline. The terminal authenticate filter below remains as a
+         * second line of defense for other interactive native surfaces.
+         */
+        add_action(
+            'login_init',
+            [self::class, 'block_native_login_post_early'],
+            -100
+        );
+
+        add_action(
+            'login_init',
+            [self::class, 'maybe_redirect_direct_login'],
+            1
+        );
+
+        add_filter(
+            'authenticate',
+            [self::class, 'block_native_authentication'],
+            1000,
+            3
+        );
+
+        /*
+         * XML-RPC can invoke wp_authenticate() independently of the
+         * interactive login UI. Deployments that make OIDC authoritative
+         * may opt in to disabling authenticated XML-RPC methods while
+         * leaving non-authenticated XML-RPC functionality available.
+         */
+        add_filter(
+            'xmlrpc_enabled',
+            [self::class, 'filter_xmlrpc_authentication_enabled'],
+            PHP_INT_MAX,
+            1
+        );
+"""
           text = replace_once(text, bootstrap_anchor, bootstrap_new, 'bootstrap hardening hooks')
 
-          method_anchor = """    /**\n     * Report whether native username/password authentication\n     * should be rejected.\n     */\n    public static function native_authentication_blocking_enabled(): bool\n"""
-          method_new = """    /**\n     * Reject an ordinary native credential-bearing POST to wp-login.php\n     * before wp_signon() enters the authenticate filter chain.\n     *\n     * Special wp-login.php actions remain outside this guard because the\n     * existing login-surface classifier does not classify them as native\n     * credential authentication.\n     */\n    public static function block_native_login_post_early(): void\n    {\n        $context = self::current_login_surface_context();\n        $surface = self::classify_login_surface($context);\n        $method = strtoupper((string) ($context['method'] ?? ''));\n\n        if (\n            $method !== 'POST' ||\n            $surface !== 'wp_login_native_credentials' ||\n            !self::should_block_native_authentication($surface)\n        ) {\n            return;\n        }\n\n        wp_die(\n            esc_html__(\n                'Password login is disabled. Please sign in with OpenID Connect.',\n                'wp-oidc-keycloak-integration'\n            ),\n            esc_html__(\n                'Authentication disabled',\n                'wp-oidc-keycloak-integration'\n            ),\n            ['response' => 403]\n        );\n    }\n\n    /**\n     * Report whether authenticated XML-RPC methods should be disabled.\n     *\n     * This is intentionally opt-in so generic deployments that depend on\n     * authenticated XML-RPC are not changed by upgrading.\n     */\n    public static function xmlrpc_authentication_blocking_enabled(): bool\n    {\n        return self::feature_flag_enabled(\n            'WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION'\n        );\n    }\n\n    /**\n     * Disable only XML-RPC methods that require WordPress authentication.\n     * WordPress core applies this filter to authenticated XML-RPC methods;\n     * it does not remove the XML-RPC endpoint itself.\n     */\n    public static function filter_xmlrpc_authentication_enabled(\n        bool $enabled\n    ): bool {\n        if (!self::xmlrpc_authentication_blocking_enabled()) {\n            return $enabled;\n        }\n\n        return false;\n    }\n\n    /**\n     * Report whether native username/password authentication\n     * should be rejected.\n     */\n    public static function native_authentication_blocking_enabled(): bool\n"""
-          text = replace_once(text, method_anchor, method_new, 'hardening methods')
+          method_anchor = """    /**
+     * Report whether native username/password authentication
+     * should be rejected.
+     */
+    public static function native_authentication_blocking_enabled(): bool
+"""
+          method_new = """    /**
+     * Reject an ordinary native credential-bearing POST to wp-login.php
+     * before wp_signon() enters the authenticate filter chain.
+     *
+     * Special wp-login.php actions remain outside this guard because the
+     * existing login-surface classifier does not classify them as native
+     * credential authentication.
+     */
+    public static function block_native_login_post_early(): void
+    {
+        $context = self::current_login_surface_context();
+        $surface = self::classify_login_surface($context);
+        $method = strtoupper((string) ($context['method'] ?? ''));
 
-          text = replace_once(
-              text,
-              '     * Reject native interactive password authentication while\\n     * preserving OIDC callbacks, REST, XML-RPC, checkout account\\n     * creation and special login actions.',
-              '     * Reject native interactive password authentication while\\n     * preserving OIDC callbacks, REST, checkout account creation and\\n     * special login actions. XML-RPC authentication is governed separately\\n     * by WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION.',
-              'native blocker documentation',
-          )
+        if (
+            $method !== 'POST' ||
+            $surface !== 'wp_login_native_credentials' ||
+            !self::should_block_native_authentication($surface)
+        ) {
+            return;
+        }
+
+        wp_die(
+            esc_html__(
+                'Password login is disabled. Please sign in with OpenID Connect.',
+                'wp-oidc-keycloak-integration'
+            ),
+            esc_html__(
+                'Authentication disabled',
+                'wp-oidc-keycloak-integration'
+            ),
+            ['response' => 403]
+        );
+    }
+
+    /**
+     * Report whether authenticated XML-RPC methods should be disabled.
+     *
+     * This is intentionally opt-in so generic deployments that depend on
+     * authenticated XML-RPC are not changed by upgrading.
+     */
+    public static function xmlrpc_authentication_blocking_enabled(): bool
+    {
+        return self::feature_flag_enabled(
+            'WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION'
+        );
+    }
+
+    /**
+     * Disable only XML-RPC methods that require WordPress authentication.
+     * WordPress core applies this filter to authenticated XML-RPC methods;
+     * it does not remove the XML-RPC endpoint itself.
+     */
+    public static function filter_xmlrpc_authentication_enabled(
+        bool $enabled
+    ): bool {
+        if (!self::xmlrpc_authentication_blocking_enabled()) {
+            return $enabled;
+        }
+
+        return false;
+    }
+
+    /**
+     * Report whether native username/password authentication
+     * should be rejected.
+     */
+    public static function native_authentication_blocking_enabled(): bool
+"""
+          text = replace_once(text, method_anchor, method_new, 'hardening methods')
           main.write_text(text, encoding='utf-8')
 
           updater = Path('mu-plugins/wp-oidc-keycloak-updater.php')
@@ -63,25 +178,64 @@ jobs:
 
           readme = Path('README.md')
           text = readme.read_text(encoding='utf-8')
-          flag_anchor = """define('WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION', true);\ndefine('WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES', true);\n"""
-          flag_new = """define('WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION', true);\ndefine('WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION', false);\ndefine('WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES', true);\n"""
+          flag_anchor = """define('WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION', true);
+define('WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES', true);
+"""
+          flag_new = """define('WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION', true);
+define('WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION', false);
+define('WP_OIDC_KEYCLOAK_SYNC_WORDPRESS_ATTRIBUTES', true);
+"""
           text = replace_once(text, flag_anchor, flag_new, 'README flag list')
-          security_anchor = """## Security notes\n\n- No Keycloak client secret is committed to Git.\n"""
-          security_new = """## Security notes\n\n- When `WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION` is enabled, ordinary credential-bearing `POST /wp-login.php` requests are rejected before WordPress enters the native password-authentication filter chain; the existing terminal `authenticate` blocker remains in place as defense in depth.\n- `WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION` is opt-in and defaults to false. When enabled, authenticated XML-RPC methods are disabled through WordPress core's `xmlrpc_enabled` filter without removing the XML-RPC endpoint or unauthenticated methods.\n- No Keycloak client secret is committed to Git.\n"""
+          security_anchor = """## Security notes
+
+- No Keycloak client secret is committed to Git.
+"""
+          security_new = """## Security notes
+
+- When `WP_OIDC_KEYCLOAK_BLOCK_NATIVE_AUTHENTICATION` is enabled, ordinary credential-bearing `POST /wp-login.php` requests are rejected before WordPress enters the native password-authentication filter chain; the existing terminal `authenticate` blocker remains in place as defense in depth.
+- `WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION` is opt-in and defaults to false. When enabled, authenticated XML-RPC methods are disabled through WordPress core's `xmlrpc_enabled` filter without removing the XML-RPC endpoint or unauthenticated methods.
+- No Keycloak client secret is committed to Git.
+"""
           text = replace_once(text, security_anchor, security_new, 'README security notes')
           readme.write_text(text, encoding='utf-8')
 
           changelog = Path('CHANGELOG.md')
           text = changelog.read_text(encoding='utf-8')
           heading = '# Changelog\n\n'
-          entry = """# Changelog\n\n## 0.6.33 — 2026-08-29\n\n- Add opt-in `WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION` enforcement through WordPress core's `xmlrpc_enabled` filter, disabling authenticated XML-RPC methods without removing the endpoint.\n- Reject ordinary credential-bearing native `POST /wp-login.php` requests at `login_init` priority `-100`, before the WordPress/Wordfence password-authentication pipeline, while retaining the existing terminal `authenticate` blocker as defense in depth.\n- Keep XML-RPC hardening disabled by default for generic deployments that intentionally depend on authenticated XML-RPC.\n\n"""
+          entry = """# Changelog
+
+## 0.6.33 — 2026-08-29
+
+- Add opt-in `WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION` enforcement through WordPress core's `xmlrpc_enabled` filter, disabling authenticated XML-RPC methods without removing the endpoint.
+- Reject ordinary credential-bearing native `POST /wp-login.php` requests at `login_init` priority `-100`, before the WordPress/Wordfence password-authentication pipeline, while retaining the existing terminal `authenticate` blocker as defense in depth.
+- Keep XML-RPC hardening disabled by default for generic deployments that intentionally depend on authenticated XML-RPC.
+
+"""
           text = replace_once(text, heading, entry, 'changelog heading')
           changelog.write_text(text, encoding='utf-8')
 
           validate = Path('scripts/validate.sh')
           text = validate.read_text(encoding='utf-8')
-          validation_anchor = """grep -Fq \"'WP_OIDC_KEYCLOAK_PROVISIONER_CONFIG_PATH'\" \"$PLUGIN\" || {\n    echo 'ERROR: generic provisioner config-path setting is missing.' >&2\n    exit 1\n}\n\n"""
-          validation_new = validation_anchor + """grep -Fq \"'WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION'\" \"$PLUGIN\" || {\n    echo 'ERROR: XML-RPC authentication hardening flag is missing.' >&2\n    exit 1\n}\ngrep -Fq \"[self::class, 'block_native_login_post_early']\" \"$PLUGIN\" || {\n    echo 'ERROR: early native login POST blocker is missing.' >&2\n    exit 1\n}\ngrep -Fq \"[self::class, 'filter_xmlrpc_authentication_enabled']\" \"$PLUGIN\" || {\n    echo 'ERROR: XML-RPC authentication filter is missing.' >&2\n    exit 1\n}\n\n"""
+          validation_anchor = """grep -Fq "'WP_OIDC_KEYCLOAK_PROVISIONER_CONFIG_PATH'" "$PLUGIN" || {
+    echo 'ERROR: generic provisioner config-path setting is missing.' >&2
+    exit 1
+}
+
+"""
+          validation_new = validation_anchor + """grep -Fq "'WP_OIDC_KEYCLOAK_BLOCK_XMLRPC_AUTHENTICATION'" "$PLUGIN" || {
+    echo 'ERROR: XML-RPC authentication hardening flag is missing.' >&2
+    exit 1
+}
+grep -Fq "[self::class, 'block_native_login_post_early']" "$PLUGIN" || {
+    echo 'ERROR: early native login POST blocker is missing.' >&2
+    exit 1
+}
+grep -Fq "[self::class, 'filter_xmlrpc_authentication_enabled']" "$PLUGIN" || {
+    echo 'ERROR: XML-RPC authentication filter is missing.' >&2
+    exit 1
+}
+
+"""
           text = replace_once(text, validation_anchor, validation_new, 'shell validation assertions')
           validate.write_text(text, encoding='utf-8')
           PY
